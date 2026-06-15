@@ -3,6 +3,7 @@ import CompanyCard from "@/components/CompanyCard";
 import DataBanner from "@/components/DataBanner";
 import RefreshButton from "@/components/RefreshButton";
 import { anyLiveData, getScreen } from "@/lib/screen";
+import { getDiagnostics } from "@/lib/provider";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +29,7 @@ const ALLOCATION = [
 export default async function Dashboard() {
   const companies = await getScreen();
   const live = anyLiveData(companies);
+  const diag = getDiagnostics();
 
   // Top candidates that actually have data, biased toward the small-cap sweet spot.
   const top = companies
@@ -58,7 +60,7 @@ export default async function Dashboard() {
         </div>
       </section>
 
-      <DataBanner live={live} />
+      <DataBanner live={live} diag={diag} />
 
       <section>
         <div className="mb-3 flex items-center justify-between">

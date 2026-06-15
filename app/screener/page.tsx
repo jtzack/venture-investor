@@ -2,6 +2,7 @@ import DataBanner from "@/components/DataBanner";
 import RefreshButton from "@/components/RefreshButton";
 import ScreenerTable from "@/components/ScreenerTable";
 import { anyLiveData, getScreen } from "@/lib/screen";
+import { getDiagnostics } from "@/lib/provider";
 import { ALL_THEMES } from "@/lib/universe";
 
 export const dynamic = "force-dynamic";
@@ -9,6 +10,7 @@ export const dynamic = "force-dynamic";
 export default async function ScreenerPage() {
   const companies = await getScreen();
   const live = anyLiveData(companies);
+  const diag = getDiagnostics();
 
   return (
     <div className="space-y-4">
@@ -23,7 +25,7 @@ export default async function ScreenerPage() {
         <RefreshButton />
       </div>
 
-      <DataBanner live={live} />
+      <DataBanner live={live} diag={diag} />
 
       <ScreenerTable companies={companies} allThemes={ALL_THEMES} />
     </div>

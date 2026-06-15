@@ -1,5 +1,7 @@
 import yahooFinance from "yahoo-finance2";
 import type { LiveMetrics } from "./types";
+import { emptyMetrics, num } from "./metrics-util";
+import { fetchManyFmp, fetchOneFmp, fmpKey } from "./provider-fmp";
 
 // Quiet the library's first-run notices so server logs stay clean.
 // `suppressNotices` isn't in every version's types, so guard it loosely.
@@ -11,33 +13,35 @@ try {
 
 const MODULES = ["price", "summaryDetail", "financialData"] as const;
 
-function emptyMetrics(ticker: string): LiveMetrics {
-  return {
-    ticker,
-    price: null,
-    marketCap: null,
-    revenueTTM: null,
-    revenueGrowthYoY: null,
-    grossMargin: null,
-    operatingMargin: null,
-    freeCashFlow: null,
-    fcfMargin: null,
-    debtToEquity: null,
-    fetched: false,
-    asOf: new Date().toISOString(),
-  };
-}
-
-function num(v: unknown): number | null {
-  return typeof v === "number" && Number.isFinite(v) ? v : null;
-}
+export type ProviderName = "fmp" | "yahoo";
 
 /**
- * Fetch one company's live metrics from Yahoo Finance.
- * Never throws — on any failure it returns a `fetched: false` snapshot so the
- * UI can show a "data pending" state instead of crashing the whole screen.
+ * Choose the data source. Prefer FMP when an API key is configured because it
+ * works from datacenter IPs (Vercel). Yahoo is the keyless local-dev fallback,
+ * but it is frequently blocked when called from serverless hosts.
  */
-export async function fetchMetrics(ticker: string): Promise<LiveMetrics> {
+export function activeProvider(): ProviderName {
+  return fmpKey() ? "fmp" : "yahoo";
+}
+
+// Lightweight diagnostics from the most recent universe fetch, surfaced to the
+// UI so a blank screen is explainable instead of mysterious.
+export interface Diagnostics {
+  provider: ProviderName;
+  attempted: number;
+  succeeded: number;
+  errors: string[];
+  at: string;
+}
+
+let lastDiagnostics: Diagnostics | null = null;
+export function getDiagnostics(): Diagnostics | null {
+  return lastDiagnostics;
+}
+
+// ───────────────────────── Yahoo backend ─────────────────────────
+
+async function fetchMetricsYahoo(ticker: string): Promise<LiveMetrics> {
   try {
     const r = await yahooFinance.quoteSummary(
       ticker,
@@ -63,31 +67,65 @@ export async function fetchMetrics(ticker: string): Promise<LiveMetrics> {
       operatingMargin: num((fin as any).operatingMargins),
       freeCashFlow: fcf,
       fcfMargin: fcf != null && revenue ? fcf / revenue : null,
-      // Yahoo reports debt/equity as a percentage (e.g. 41.5 => 0.415).
       debtToEquity: d2eRaw != null ? d2eRaw / 100 : null,
       fetched: true,
       asOf: new Date().toISOString(),
     };
-  } catch {
-    return emptyMetrics(ticker);
+  } catch (e) {
+    throw e instanceof Error ? e : new Error(String(e));
   }
 }
 
-/** Fetch many tickers with bounded concurrency so we don't hammer the source. */
-export async function fetchMany(
+async function fetchManyYahoo(
   tickers: string[],
   concurrency = 5,
-): Promise<LiveMetrics[]> {
-  const out: LiveMetrics[] = [];
+): Promise<{ metrics: LiveMetrics[]; errors: string[] }> {
+  const metrics = new Array<LiveMetrics>(tickers.length);
+  const errors: string[] = [];
   let i = 0;
   async function worker() {
     while (i < tickers.length) {
       const idx = i++;
-      out[idx] = await fetchMetrics(tickers[idx]);
+      try {
+        metrics[idx] = await fetchMetricsYahoo(tickers[idx]);
+      } catch (e) {
+        metrics[idx] = emptyMetrics(tickers[idx]);
+        if (errors.length < 3) errors.push(`${tickers[idx]}: ${(e as Error).message}`);
+      }
     }
   }
   await Promise.all(
     Array.from({ length: Math.min(concurrency, tickers.length) }, worker),
   );
-  return out;
+  return { metrics, errors };
+}
+
+// ───────────────────────── Dispatcher ─────────────────────────
+
+/** Fetch live metrics for many tickers using the active provider. */
+export async function fetchMany(tickers: string[]): Promise<LiveMetrics[]> {
+  const provider = activeProvider();
+  const { metrics, errors } =
+    provider === "fmp"
+      ? await fetchManyFmp(tickers)
+      : await fetchManyYahoo(tickers);
+
+  lastDiagnostics = {
+    provider,
+    attempted: tickers.length,
+    succeeded: metrics.filter((m) => m.fetched).length,
+    errors,
+    at: new Date().toISOString(),
+  };
+  return metrics;
+}
+
+/** Fetch a single ticker using the active provider. */
+export async function fetchMetrics(ticker: string): Promise<LiveMetrics> {
+  if (activeProvider() === "fmp") return fetchOneFmp(ticker);
+  try {
+    return await fetchMetricsYahoo(ticker);
+  } catch {
+    return emptyMetrics(ticker);
+  }
 }

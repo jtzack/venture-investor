@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { anyLiveData, getScreen } from "@/lib/screen";
+import { getDiagnostics } from "@/lib/provider";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -10,6 +11,7 @@ export async function GET(request: Request) {
   return NextResponse.json({
     asOf: new Date().toISOString(),
     live: anyLiveData(data),
+    diagnostics: getDiagnostics(),
     count: data.length,
     companies: data,
   });

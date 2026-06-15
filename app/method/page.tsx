@@ -85,10 +85,12 @@ export default function MethodPage() {
         <h2 className="font-semibold">Where the data comes from</h2>
         <p className="mt-2 text-sm text-slate-400">
           Static facts (sector, theme, founder-led) are curated by hand in the
-          repo and should be re-verified — CEOs change. Live fundamentals are
-          pulled from Yahoo Finance at request time and cached for 30 minutes. If
-          the provider can&apos;t be reached, the app says so rather than showing
-          fabricated numbers.
+          repo and should be re-verified — CEOs change. Live fundamentals come
+          from Financial Modeling Prep (when an{" "}
+          <span className="font-mono text-slate-300">FMP_API_KEY</span> is set)
+          or Yahoo Finance as a keyless local fallback, fetched at request time
+          and cached for 30 minutes. If a provider can&apos;t be reached, the app
+          says so rather than showing fabricated numbers.
         </p>
         <p className="mt-3 text-sm text-slate-400">
           Want a name added? Edit{" "}

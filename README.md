@@ -33,7 +33,8 @@ space, fintech, and semiconductors.
 ## Tech
 
 - **Next.js 14** (App Router) + TypeScript + Tailwind
-- **yahoo-finance2** for free, no-API-key fundamentals
+- **Financial Modeling Prep** (free API key) for fundamentals that work from
+  serverless hosts, with **yahoo-finance2** as a keyless local-dev fallback
 - **Vitest** unit tests for the scoring engine
 - Watchlist persisted in `localStorage` (no database required)
 
@@ -53,19 +54,34 @@ npm test           # run the scoring-engine unit tests
 npm run lint
 ```
 
-### A note on data and networks
+### Data providers (important)
 
-Live fundamentals are fetched from Yahoo Finance at request time and cached for
-30 minutes. If outbound network is blocked (e.g. inside a restricted CI sandbox),
-every metric comes back empty and the app shows a clear **"live financials not
-loaded"** banner rather than fabricating numbers. Run it locally or deploy it
-somewhere with open network access to see real data, then hit **Refresh**.
+The app picks its data source automatically:
+
+- **Financial Modeling Prep (FMP)** — used whenever `FMP_API_KEY` is set. FMP
+  works reliably from datacenter IPs, so **this is what you need for Vercel.**
+  The free tier (no credit card) is enough for personal use.
+- **Yahoo Finance** (`yahoo-finance2`) — the keyless fallback when no key is set.
+  Great locally, but **Yahoo blocks requests from serverless hosts like Vercel**
+  (401/429), so it will show empty data in production.
+
+If live metrics don't load, the app shows a banner that names the provider it
+used and the first error it hit — and never fabricates numbers. The same info is
+in `GET /api/screen` under `diagnostics`.
+
+### Get a free FMP key
+
+1. Sign up at
+   [financialmodelingprep.com](https://site.financialmodelingprep.com/developer/docs)
+   and copy your API key.
+2. Locally: copy `.env.example` to `.env.local` and set `FMP_API_KEY=...`.
+3. On Vercel: **Settings → Environment Variables → add `FMP_API_KEY`**, then
+   redeploy.
 
 ## Deploying
 
-Deploys cleanly to **Vercel** (open network, so live data works out of the box).
-Point Vercel at this repo and accept the defaults — no environment variables are
-required for the free data path.
+Deploys cleanly to **Vercel**. Add the `FMP_API_KEY` environment variable
+(above) so live data loads in production, then redeploy.
 
 ## How scoring works
 
