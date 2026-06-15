@@ -122,7 +122,10 @@ export async function fetchMany(tickers: string[]): Promise<LiveMetrics[]> {
 
 /** Fetch a single ticker using the active provider. */
 export async function fetchMetrics(ticker: string): Promise<LiveMetrics> {
-  if (activeProvider() === "fmp") return fetchOneFmp(ticker);
+  if (activeProvider() === "fmp") {
+    const { metrics } = await fetchOneFmp(ticker);
+    return metrics;
+  }
   try {
     return await fetchMetricsYahoo(ticker);
   } catch {

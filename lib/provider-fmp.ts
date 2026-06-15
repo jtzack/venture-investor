@@ -1,15 +1,18 @@
 import type { LiveMetrics } from "./types";
 import { emptyMetrics, num } from "./metrics-util";
 
-// Financial Modeling Prep provider. Unlike Yahoo, FMP is built for server-side
-// use and works reliably from datacenter IPs (Vercel, AWS, etc.). It needs a
-// free API key (no credit card): https://site.financialmodelingprep.com/developer
+// Financial Modeling Prep provider, written against FMP's CURRENT "stable" API.
 //
-// Request budget: the free tier allows ~250 calls/day. To stay frugal we make
-// ONE batched /quote call for every ticker's price + market cap, then one
-// /income-statement call per ticker for revenue, growth and margins.
+// FMP migrated away from the legacy `/api/v3/` endpoints; keys created after the
+// migration get HTTP 403 ("Legacy Endpoint") on v3 and must use `/stable/`
+// instead. The stable endpoints take the symbol as a query parameter.
+//
+// Free tier (no credit card): https://site.financialmodelingprep.com/developer
+// Request budget ~250/day. We make two calls per ticker: a quote (price +
+// market cap) and the two most recent annual income statements (growth +
+// margins). Results cache for 30 minutes in screen.ts.
 
-const BASE = "https://financialmodelingprep.com/api/v3";
+const BASE = "https://financialmodelingprep.com/stable";
 const TIMEOUT_MS = 9000;
 
 export function fmpKey(): string | undefined {
@@ -21,6 +24,7 @@ async function fmpGet(path: string): Promise<any> {
   if (!key) throw new Error("FMP_API_KEY not set");
   const sep = path.includes("?") ? "&" : "?";
   const url = `${BASE}${path}${sep}apikey=${key}`;
+  const label = path.split("?")[0];
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
@@ -31,10 +35,17 @@ async function fmpGet(path: string): Promise<any> {
       headers: { "User-Agent": "venture-investor/1.0" },
     });
     if (!res.ok) {
-      throw new Error(`FMP HTTP ${res.status} for ${path.split("?")[0]}`);
+      // Capture a snippet of the body so diagnostics explain *why* (e.g.
+      // "Legacy Endpoint", "Invalid API KEY", "Limit Reach").
+      let body = "";
+      try {
+        body = (await res.text()).replace(/\s+/g, " ").slice(0, 140);
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`HTTP ${res.status}${body ? ` — ${body}` : ""} for ${label}`);
     }
     const json = await res.json();
-    // FMP signals plan/limit problems with an object instead of an array.
     if (json && !Array.isArray(json) && (json["Error Message"] || json.error)) {
       throw new Error(String(json["Error Message"] || json.error));
     }
@@ -49,20 +60,11 @@ interface QuoteLite {
   marketCap: number | null;
 }
 
-/** One batched call: price + market cap for every ticker. */
-async function fetchQuotes(tickers: string[]): Promise<Map<string, QuoteLite>> {
-  const map = new Map<string, QuoteLite>();
-  const rows = await fmpGet(`/quote/${tickers.join(",")}`);
-  if (Array.isArray(rows)) {
-    for (const r of rows) {
-      if (!r?.symbol) continue;
-      map.set(String(r.symbol).toUpperCase(), {
-        price: num(r.price),
-        marketCap: num(r.marketCap),
-      });
-    }
-  }
-  return map;
+/** Quote: price + market cap for one ticker (stable API is single-symbol). */
+async function fetchQuote(ticker: string): Promise<QuoteLite> {
+  const rows = await fmpGet(`/quote?symbol=${encodeURIComponent(ticker)}`);
+  const r = Array.isArray(rows) ? rows[0] : rows;
+  return { price: num(r?.price), marketCap: num(r?.marketCap) };
 }
 
 interface IncomeLite {
@@ -74,7 +76,9 @@ interface IncomeLite {
 
 /** Two most-recent annual income statements → growth + margins. */
 async function fetchIncome(ticker: string): Promise<IncomeLite> {
-  const rows = await fmpGet(`/income-statement/${ticker}?period=annual&limit=2`);
+  const rows = await fmpGet(
+    `/income-statement?symbol=${encodeURIComponent(ticker)}&period=annual&limit=2`,
+  );
   const cur = Array.isArray(rows) ? rows[0] : null;
   const prev = Array.isArray(rows) ? rows[1] : null;
 
@@ -97,7 +101,7 @@ async function fetchIncome(ticker: string): Promise<IncomeLite> {
 
 function combine(
   ticker: string,
-  quote: QuoteLite | undefined,
+  quote: QuoteLite | null,
   income: IncomeLite | null,
 ): LiveMetrics {
   return {
@@ -116,51 +120,40 @@ function combine(
   };
 }
 
-/** Fetch the whole universe via FMP. Returns metrics + any errors hit. */
+/** Fetch one ticker (quote + income), tolerating a failure of either call. */
+export async function fetchOneFmp(
+  ticker: string,
+): Promise<{ metrics: LiveMetrics; errors: string[] }> {
+  const errors: string[] = [];
+  const quote = await fetchQuote(ticker).catch((e) => {
+    errors.push(`${ticker} quote: ${(e as Error).message}`);
+    return null;
+  });
+  const income = await fetchIncome(ticker).catch((e) => {
+    errors.push(`${ticker} income: ${(e as Error).message}`);
+    return null;
+  });
+  return { metrics: combine(ticker, quote, income), errors };
+}
+
+/** Fetch the whole universe via FMP with bounded concurrency. */
 export async function fetchManyFmp(
   tickers: string[],
   concurrency = 6,
 ): Promise<{ metrics: LiveMetrics[]; errors: string[] }> {
+  const metrics = new Array<LiveMetrics>(tickers.length);
   const errors: string[] = [];
-
-  let quotes = new Map<string, QuoteLite>();
-  try {
-    quotes = await fetchQuotes(tickers);
-  } catch (e) {
-    errors.push(`quotes: ${(e as Error).message}`);
-  }
-
-  const incomes = new Array<IncomeLite | null>(tickers.length).fill(null);
   let i = 0;
   async function worker() {
     while (i < tickers.length) {
       const idx = i++;
-      try {
-        incomes[idx] = await fetchIncome(tickers[idx]);
-      } catch (e) {
-        if (errors.length < 3) errors.push(`${tickers[idx]}: ${(e as Error).message}`);
-      }
+      const res = await fetchOneFmp(tickers[idx]);
+      metrics[idx] = res.metrics;
+      for (const e of res.errors) if (errors.length < 4) errors.push(e);
     }
   }
   await Promise.all(
     Array.from({ length: Math.min(concurrency, tickers.length) }, worker),
   );
-
-  const metrics = tickers.map((t, idx) =>
-    combine(t, quotes.get(t.toUpperCase()), incomes[idx]),
-  );
   return { metrics, errors };
-}
-
-/** Fetch a single ticker via FMP (used by the company page). */
-export async function fetchOneFmp(ticker: string): Promise<LiveMetrics> {
-  try {
-    const [quotes, income] = await Promise.all([
-      fetchQuotes([ticker]).catch(() => new Map<string, QuoteLite>()),
-      fetchIncome(ticker).catch(() => null),
-    ]);
-    return combine(ticker, quotes.get(ticker.toUpperCase()), income);
-  } catch {
-    return emptyMetrics(ticker);
-  }
 }
