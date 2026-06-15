@@ -17,7 +17,9 @@ export function finnhubKey(): string | undefined {
   return process.env.FINNHUB_API_KEY?.trim() || undefined;
 }
 
-async function fhGet(path: string): Promise<any> {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function fhGet(path: string, retryOn429 = true): Promise<any> {
   const key = finnhubKey();
   if (!key) throw new Error("FINNHUB_API_KEY not set");
   const sep = path.includes("?") ? "&" : "?";
@@ -32,6 +34,12 @@ async function fhGet(path: string): Promise<any> {
       cache: "no-store",
       headers: { "User-Agent": "venture-investor/1.0" },
     });
+    // Free tier is 60 calls/min; a near-full scan can briefly trip 429.
+    // Back off once and retry before giving up on this ticker.
+    if (res.status === 429 && retryOn429) {
+      await sleep(1500);
+      return fhGet(path, false);
+    }
     if (!res.ok) {
       let body = "";
       try {
@@ -56,19 +64,50 @@ const asFracMargin = (v: number | null) =>
 const asFracGrowth = (v: number | null) =>
   v == null ? null : Math.abs(v) > 5 ? v / 100 : v;
 
-function metricToLive(
+interface Basics {
+  metric: Record<string, unknown>;
+  series: Record<string, any>;
+}
+
+/** Pull the most recent value of an annual `series` entry (e.g. fcfMargin). */
+function latestSeries(series: Record<string, any>, key: string): number | null {
+  const arr = series?.annual?.[key];
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  // Series entries look like { period: "2023-12-31", v: 0.31 }.
+  let best: { period: string; v: number } | null = null;
+  for (const e of arr) {
+    if (typeof e?.v !== "number") continue;
+    if (!best || String(e.period) > String(best.period)) best = e;
+  }
+  return best ? best.v : null;
+}
+
+function buildMetrics(
   ticker: string,
-  metric: Record<string, unknown> | null,
+  basics: Basics | null,
   price: number | null,
+  shares: number | null,
 ): LiveMetrics {
-  const m = metric ?? {};
+  const m = basics?.metric ?? {};
+  const series = basics?.series ?? {};
+
   const mcapMillions = num(m.marketCapitalization);
+  const revenuePerShare = num(m.revenuePerShareTTM);
+  // Absolute revenue needs shares outstanding (only fetched on the detail page).
+  const revenueTTM =
+    revenuePerShare != null && shares ? revenuePerShare * shares : null;
+
+  // FCF margin comes straight from Finnhub's annual series when present — more
+  // accurate than the operating-margin proxy the score otherwise falls back to.
+  const fcfMargin = asFracMargin(latestSeries(series, "fcfMargin"));
+  const freeCashFlow =
+    fcfMargin != null && revenueTTM != null ? fcfMargin * revenueTTM : null;
+
   return {
     ticker,
     price,
-    // Finnhub reports market cap in millions of USD.
     marketCap: mcapMillions != null ? mcapMillions * 1e6 : null,
-    revenueTTM: null, // not provided as an absolute by this endpoint
+    revenueTTM,
     revenueGrowthYoY: asFracGrowth(
       num(m.revenueGrowthTTMYoy) ?? num(m.revenueGrowthQuarterlyYoy),
     ),
@@ -76,34 +115,46 @@ function metricToLive(
     operatingMargin: asFracMargin(
       num(m.operatingMarginTTM) ?? num(m.operatingMarginAnnual),
     ),
-    freeCashFlow: null,
-    fcfMargin: null,
+    freeCashFlow,
+    fcfMargin,
     debtToEquity: asFracMargin(num(m["totalDebt/totalEquityQuarterly"])),
-    fetched: metric != null,
+    fetched: basics != null,
     asOf: new Date().toISOString(),
   };
 }
 
-async function fetchMetricObj(
-  ticker: string,
-): Promise<Record<string, unknown> | null> {
+async function fetchBasics(ticker: string): Promise<Basics | null> {
   const r = await fhGet(`/stock/metric?symbol=${encodeURIComponent(ticker)}&metric=all`);
-  return (r?.metric as Record<string, unknown>) ?? null;
+  if (!r || typeof r !== "object" || !r.metric) return null;
+  return { metric: r.metric as Record<string, unknown>, series: r.series ?? {} };
 }
 
-/** Single ticker, including a price quote (used by the company detail page). */
+/** Shares outstanding (absolute) from the company profile, for revenue/FCF $. */
+async function fetchShares(ticker: string): Promise<number | null> {
+  const p = await fhGet(`/stock/profile2?symbol=${encodeURIComponent(ticker)}`);
+  const millions = num(p?.shareOutstanding); // Finnhub reports in millions
+  return millions != null ? millions * 1e6 : null;
+}
+
+/**
+ * Single ticker for the detail page: basics + a price quote + shares
+ * outstanding (so we can show absolute Revenue and Free Cash Flow).
+ */
 export async function fetchOneFinnhub(
   ticker: string,
 ): Promise<{ metrics: LiveMetrics; errors: string[] }> {
   const errors: string[] = [];
-  const metric = await fetchMetricObj(ticker).catch((e) => {
+  const basics = await fetchBasics(ticker).catch((e) => {
     errors.push(`${ticker} metric: ${(e as Error).message}`);
     return null;
   });
-  const price = await fhGet(`/quote?symbol=${encodeURIComponent(ticker)}`)
-    .then((q) => num(q?.c))
-    .catch(() => null);
-  return { metrics: metricToLive(ticker, metric, price), errors };
+  const [price, shares] = await Promise.all([
+    fhGet(`/quote?symbol=${encodeURIComponent(ticker)}`)
+      .then((q) => num(q?.c))
+      .catch(() => null),
+    fetchShares(ticker).catch(() => null),
+  ]);
+  return { metrics: buildMetrics(ticker, basics, price, shares), errors };
 }
 
 /** Whole universe: one basic-financials call per ticker (no price, to stay frugal). */
@@ -119,8 +170,8 @@ export async function fetchManyFinnhub(
       const idx = i++;
       const t = tickers[idx];
       try {
-        const metric = await fetchMetricObj(t);
-        metrics[idx] = metricToLive(t, metric, null);
+        const basics = await fetchBasics(t);
+        metrics[idx] = buildMetrics(t, basics, null, null);
       } catch (e) {
         metrics[idx] = emptyMetrics(t);
         if (errors.length < 4) errors.push(`${t}: ${(e as Error).message}`);

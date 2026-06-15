@@ -86,11 +86,17 @@ export default function MethodPage() {
         <p className="mt-2 text-sm text-slate-400">
           Static facts (sector, theme, founder-led) are curated by hand in the
           repo and should be re-verified — CEOs change. Live fundamentals come
-          from Financial Modeling Prep (when an{" "}
-          <span className="font-mono text-slate-300">FMP_API_KEY</span> is set)
-          or Yahoo Finance as a keyless local fallback, fetched at request time
-          and cached for 30 minutes. If a provider can&apos;t be reached, the app
+          from Finnhub (recommended, free tier covers small-caps), with FMP and
+          a keyless Yahoo fallback also supported, fetched at request time and
+          cached for 30 minutes. If a provider can&apos;t be reached, the app
           says so rather than showing fabricated numbers.
+        </p>
+        <p className="mt-3 text-sm text-slate-400">
+          The screener ranks a curated candidate pool, and{" "}
+          <span className="font-mono text-slate-300">Discover</span> filters it
+          to the names clearing your bar. Scanning the entire public market is a
+          planned next step — on free data tiers it requires a cached background
+          scanner (e.g. via Supabase) rather than a live request.
         </p>
         <p className="mt-3 text-sm text-slate-400">
           Want a name added? Edit{" "}
