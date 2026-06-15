@@ -1,8 +1,8 @@
 import type { Diagnostics } from "@/lib/provider";
 
 /**
- * Honesty + actionability banner. When live metrics didn't load, explain WHY
- * (which provider ran, what error it hit) and exactly how to fix it, instead of
+ * Honesty + actionability banner. When live metrics didn't load, explain which
+ * provider ran, the first error it hit, and exactly how to fix it — instead of
  * silently showing empty numbers.
  */
 export default function DataBanner({
@@ -14,43 +14,45 @@ export default function DataBanner({
 }) {
   if (live) return null;
 
-  const onYahoo = diag?.provider === "yahoo";
+  const provider = diag?.provider ?? "yahoo";
+
+  let reason: string;
+  if (provider === "yahoo") {
+    reason =
+      "No data-provider key is set, so the app fell back to keyless Yahoo Finance — which is blocked from datacenter IPs like Vercel.";
+  } else if (provider === "fmp") {
+    reason =
+      "FMP's free plan restricts its symbol universe to large, established names and blocks the small-caps this screener targets.";
+  } else {
+    reason =
+      "The data provider returned no usable data — likely an invalid key or a rate limit.";
+  }
 
   return (
     <div className="card mb-5 border-warn/30 bg-warn/10 p-4 text-sm text-warn">
       <p className="font-semibold">⚠ Live financials didn&apos;t load</p>
+      <p className="mt-1 text-warn/90">{reason}</p>
 
-      {onYahoo ? (
-        <p className="mt-1 text-warn/90">
-          The app is using the keyless <b>Yahoo Finance</b> source, which works
-          locally but is <b>blocked from datacenter IPs like Vercel</b> (Yahoo
-          returns 401/429). To get live data in production, add a free{" "}
-          <b>Financial Modeling Prep</b> key:
-        </p>
-      ) : (
-        <p className="mt-1 text-warn/90">
-          The data provider returned no usable data. Check that your{" "}
-          <span className="font-mono">FMP_API_KEY</span> is valid and that the
-          free-tier request limit hasn&apos;t been hit.
-        </p>
-      )}
-
-      <ol className="mt-2 list-decimal space-y-1 pl-5 text-warn/90">
+      <p className="mt-2 text-warn/90">
+        Fix: use <b>Finnhub</b> — its free tier covers US small-caps and works
+        from serverless hosts.
+      </p>
+      <ol className="mt-1 list-decimal space-y-1 pl-5 text-warn/90">
         <li>
-          Grab a free key at{" "}
+          Get a free key at{" "}
           <a
             className="underline"
-            href="https://site.financialmodelingprep.com/developer/docs"
+            href="https://finnhub.io/register"
             target="_blank"
             rel="noopener noreferrer"
           >
-            financialmodelingprep.com
+            finnhub.io/register
           </a>{" "}
           (no credit card).
         </li>
         <li>
-          In Vercel → Project → <b>Settings → Environment Variables</b>, add{" "}
-          <span className="font-mono">FMP_API_KEY</span> = your key.
+          In Vercel → <b>Settings → Environment Variables</b>, add{" "}
+          <span className="font-mono">FINNHUB_API_KEY</span>.
         </li>
         <li>
           <b>Redeploy</b>, then hit <span className="font-mono">Refresh</span>.

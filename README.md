@@ -56,32 +56,33 @@ npm run lint
 
 ### Data providers (important)
 
-The app picks its data source automatically:
+The app picks its data source automatically, in priority order:
 
-- **Financial Modeling Prep (FMP)** — used whenever `FMP_API_KEY` is set. FMP
-  works reliably from datacenter IPs, so **this is what you need for Vercel.**
-  The free tier (no credit card) is enough for personal use.
-- **Yahoo Finance** (`yahoo-finance2`) — the keyless fallback when no key is set.
-  Great locally, but **Yahoo blocks requests from serverless hosts like Vercel**
-  (401/429), so it will show empty data in production.
+- **Finnhub** (recommended) — used when `FINNHUB_API_KEY` is set. Its **free tier
+  covers US small-caps** and works from datacenter IPs, so it's the right fit for
+  both this screener's purpose and Vercel. One call per ticker.
+- **Financial Modeling Prep (FMP)** — used when `FMP_API_KEY` is set (and no
+  Finnhub key). Works on Vercel, but its **free plan excludes small-caps**
+  (returns HTTP 402 for them), so it's only useful on a paid plan.
+- **Yahoo Finance** (`yahoo-finance2`) — keyless local-dev fallback. Great
+  locally, but **blocked from serverless hosts like Vercel** (401/429).
 
-If live metrics don't load, the app shows a banner that names the provider it
-used and the first error it hit — and never fabricates numbers. The same info is
-in `GET /api/screen` under `diagnostics`.
+If live metrics don't load, the app shows a banner naming the provider it used
+and the first error it hit — and never fabricates numbers. The same info is in
+`GET /api/screen` under `diagnostics`.
 
-### Get a free FMP key
+### Get a free Finnhub key
 
-1. Sign up at
-   [financialmodelingprep.com](https://site.financialmodelingprep.com/developer/docs)
-   and copy your API key.
-2. Locally: copy `.env.example` to `.env.local` and set `FMP_API_KEY=...`.
-3. On Vercel: **Settings → Environment Variables → add `FMP_API_KEY`**, then
+1. Register at [finnhub.io/register](https://finnhub.io/register) (no credit
+   card) and copy your API key.
+2. Locally: copy `.env.example` to `.env.local` and set `FINNHUB_API_KEY=...`.
+3. On Vercel: **Settings → Environment Variables → add `FINNHUB_API_KEY`**, then
    redeploy.
 
 ## Deploying
 
-Deploys cleanly to **Vercel**. Add the `FMP_API_KEY` environment variable
-(above) so live data loads in production, then redeploy.
+Deploys cleanly to **Vercel**. Add the `FINNHUB_API_KEY` environment variable
+(above) so live small-cap data loads in production, then redeploy.
 
 ## How scoring works
 

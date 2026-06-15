@@ -2,6 +2,11 @@ import yahooFinance from "yahoo-finance2";
 import type { LiveMetrics } from "./types";
 import { emptyMetrics, num } from "./metrics-util";
 import { fetchManyFmp, fetchOneFmp, fmpKey } from "./provider-fmp";
+import {
+  fetchManyFinnhub,
+  fetchOneFinnhub,
+  finnhubKey,
+} from "./provider-finnhub";
 
 // Quiet the library's first-run notices so server logs stay clean.
 // `suppressNotices` isn't in every version's types, so guard it loosely.
@@ -13,15 +18,18 @@ try {
 
 const MODULES = ["price", "summaryDetail", "financialData"] as const;
 
-export type ProviderName = "fmp" | "yahoo";
+export type ProviderName = "finnhub" | "fmp" | "yahoo";
 
 /**
- * Choose the data source. Prefer FMP when an API key is configured because it
- * works from datacenter IPs (Vercel). Yahoo is the keyless local-dev fallback,
- * but it is frequently blocked when called from serverless hosts.
+ * Choose the data source, in priority order:
+ *   1. Finnhub — free tier covers US small-caps and works from datacenter IPs.
+ *   2. FMP — works from datacenter IPs, but its free plan excludes small-caps.
+ *   3. Yahoo — keyless local-dev fallback, blocked from serverless hosts.
  */
 export function activeProvider(): ProviderName {
-  return fmpKey() ? "fmp" : "yahoo";
+  if (finnhubKey()) return "finnhub";
+  if (fmpKey()) return "fmp";
+  return "yahoo";
 }
 
 // Lightweight diagnostics from the most recent universe fetch, surfaced to the
@@ -106,9 +114,11 @@ async function fetchManyYahoo(
 export async function fetchMany(tickers: string[]): Promise<LiveMetrics[]> {
   const provider = activeProvider();
   const { metrics, errors } =
-    provider === "fmp"
-      ? await fetchManyFmp(tickers)
-      : await fetchManyYahoo(tickers);
+    provider === "finnhub"
+      ? await fetchManyFinnhub(tickers)
+      : provider === "fmp"
+        ? await fetchManyFmp(tickers)
+        : await fetchManyYahoo(tickers);
 
   lastDiagnostics = {
     provider,
@@ -122,7 +132,12 @@ export async function fetchMany(tickers: string[]): Promise<LiveMetrics[]> {
 
 /** Fetch a single ticker using the active provider. */
 export async function fetchMetrics(ticker: string): Promise<LiveMetrics> {
-  if (activeProvider() === "fmp") {
+  const provider = activeProvider();
+  if (provider === "finnhub") {
+    const { metrics } = await fetchOneFinnhub(ticker);
+    return metrics;
+  }
+  if (provider === "fmp") {
     const { metrics } = await fetchOneFmp(ticker);
     return metrics;
   }
